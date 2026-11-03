@@ -24,6 +24,7 @@ $files = [ordered]@{
     'MicrosoftWindowsUpdates' = Join-Path $root 'Modules\Productivity\MicrosoftWindowsUpdates.psm1'
     'AdobeReader'             = Join-Path $root 'Modules\Productivity\AdobeReader.psm1'
     'AdobeAcrobat'            = Join-Path $root 'Modules\Productivity\AdobeAcrobat.psm1'
+    'MicrosoftDotNetFramework' = Join-Path $root 'Modules\Runtimes\MicrosoftDotNetFramework.psm1'
 }
 $required = 'Test-AppInstalled', 'Get-AppVersion', 'Invoke-AppUpdate', 'Test-UpdateSuccess'
 $mods = @{}
@@ -183,6 +184,11 @@ Test-Case 'AdobeReader -Simulate performs no install' {
 Test-Case 'AdobeAcrobat -Simulate performs no install' {
     Set-MockInstaller -Throw   # would throw if installer called
     $r = Invoke-Fn $mods['AdobeAcrobat'] 'Invoke-AppUpdate' @{ Simulate = $true }; Assert-Schema $r
+    Assert ($r.Success -and ($r.Message -like 'SIMULATE*' -or $r.Message -like 'Already up to date*')) $r.Message
+}
+Test-Case 'MicrosoftDotNetFramework -Simulate performs no install' {
+    Set-MockInstaller -Throw   # would throw if installer called
+    $r = Invoke-Fn $mods['MicrosoftDotNetFramework'] 'Invoke-AppUpdate' @{ Simulate = $true }; Assert-Schema $r
     Assert ($r.Success -and ($r.Message -like 'SIMULATE*' -or $r.Message -like 'Already up to date*')) $r.Message
 }
 Test-Case 'Template Invoke-AppUpdate returns schema even on error' {
