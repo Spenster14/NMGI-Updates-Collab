@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-    Microsoft .NET Framework - Production Update & Runtime Servicing Module
+    Microsoft .NET Framework & Modern .NET Runtime Servicing Module
     Strategy:
       * Core Runtime Target: .NET Framework 4.8.1 (Release >= 533320).
       * On Windows 11 (22H2+) / Server 2025: .NET 4.8.1 is built directly into the OS.
@@ -9,6 +9,8 @@
         official Microsoft .NET Framework 4.8.1 standalone offline installer silently.
       * Legacy Accounting Compatibility: Ensures .NET Framework 3.5 (NetFx3) is enabled
         via DISM, which is required by Thomson Reuters, CCH, and Intuit desktop suites.
+      * Modern .NET Runtimes (.NET 6, 7, 8, 9): Detects any installed modern side-by-side
+        desktop runtimes on the client and updates them to their latest service patch via WinGet.
     Rules:
       * Headless execution under NT AUTHORITY\SYSTEM.
       * Suppresses module-level reboots (traps 3010 and defers to orchestrator).
@@ -69,20 +71,79 @@ function Test-NetFx3Enabled {
     return $false
 }
 
+function Get-InstalledModernDotNetRuntimes {
+    <#
+    .SYNOPSIS
+        Detects installed modern .NET (Core) / Windows Desktop runtimes (e.g. 6.x, 8.x, 9.x).
+        Returns a list of custom objects with Name, Major, and Version.
+    #>
+    $found = @{}
+
+    # 1. Via dotnet CLI if available
+    $dotnetExe = "$env:ProgramFiles\dotnet\dotnet.exe"
+    if (Test-Path -LiteralPath $dotnetExe) {
+        try {
+            $lines = & $dotnetExe --list-runtimes 2>$null
+            foreach ($line in $lines) {
+                if ($line -match '^(\S+)\s+(\d+)\.([\d\.]+)\s+\[(.*)\]') {
+                    $name    = $matches[1]
+                    $major   = [int]$matches[2]
+                    $version = "$($matches[2]).$($matches[3])"
+                    $key     = "$name-$major"
+                    if (-not $found.ContainsKey($key) -or (Compare-AppVersion -Left $version -Right $found[$key].Version) -gt 0) {
+                        $found[$key] = [pscustomobject]@{
+                            Name    = $name
+                            Major   = $major
+                            Version = $version
+                        }
+                    }
+                }
+            }
+        } catch { }
+    }
+
+    # 2. Via Registry Uninstall entries
+    try {
+        $entries = Get-UninstallEntry -DisplayName '*Microsoft*.NET*' |
+            Where-Object { $_.DisplayName -match '(?i)Microsoft\s+(Windows\s+Desktop|\.NET)\s+Runtime\s*-\s*(\d+)\.' }
+        foreach ($e in $entries) {
+            if ($e.DisplayName -match '(?i)Microsoft\s+(Windows\s+Desktop|\.NET)\s+Runtime\s*-\s*(\d+)\.') {
+                $major = [int]$matches[2]
+                $ver   = if ($e.DisplayVersion) { [string]$e.DisplayVersion } else { "$major.0" }
+                $key   = "DesktopRuntime-$major"
+                if (-not $found.ContainsKey($key) -or (Compare-AppVersion -Left $ver -Right $found[$key].Version) -gt 0) {
+                    $found[$key] = [pscustomobject]@{
+                        Name    = 'Microsoft.WindowsDesktop.App'
+                        Major   = $major
+                        Version = $ver
+                    }
+                }
+            }
+        }
+    } catch { }
+
+    return @($found.Values)
+}
+
 function Test-AppInstalled {
     [CmdletBinding()] [OutputType([bool])] param()
     $info = Get-DotNet4Info
-    return ($null -ne $info)
+    if ($null -ne $info) { return $true }
+    $modern = Get-InstalledModernDotNetRuntimes
+    return ($modern.Count -gt 0)
 }
 
 function Get-AppVersion {
     [CmdletBinding()] [OutputType([string])] param()
     $info = Get-DotNet4Info
-    if ($info) {
-        # Format as e.g. 4.8.1 (533509)
-        return "{0} ({1})" -f $info.Friendly, $info.Release
+    $v = if ($info) { "{0} ({1})" -f $info.Friendly, $info.Release } else { '' }
+
+    $modern = Get-InstalledModernDotNetRuntimes
+    if ($modern.Count -gt 0) {
+        $modernDesc = ($modern | ForEach-Object { ".NET $($_.Major)" } | Select-Object -Unique) -join ', '
+        if ($v) { $v += "; Modern: [$modernDesc]" } else { $v = "Modern: [$modernDesc]" }
     }
-    return ''
+    return $v
 }
 
 function Invoke-AppUpdate {
@@ -107,18 +168,24 @@ function Invoke-AppUpdate {
         $currentRelease = $info.Release
         $currentFriendly = $info.Friendly
         $hasNetFx3 = Test-NetFx3Enabled
-
-        # Check if already on .NET 4.8.1 or higher
         $isCurrent481 = ($currentRelease -ge $script:MinTargetRelease)
+        $modernRuntimes = Get-InstalledModernDotNetRuntimes
 
         # Simulation mode
         if ($Simulate) {
             $result.Success = $true
-            if ($isCurrent481) {
-                $statusFx3 = if ($hasNetFx3) { "NetFx3 enabled" } else { "would enable NetFx3 feature" }
-                $result.Message = "SIMULATE: .NET Framework is current ($currentFriendly, Release $currentRelease; $statusFx3)."
+            $statusFx3 = if ($hasNetFx3) { "NetFx3 enabled" } else { "would enable NetFx3 feature" }
+            $modernMsg = if ($modernRuntimes.Count -gt 0) {
+                $majors = ($modernRuntimes | Select-Object -ExpandProperty Major -Unique) -join ', '
+                "installed modern runtimes: .NET $majors"
             } else {
-                $result.Message = "SIMULATE: would install .NET Framework 4.8.1 via offline installer (current: $currentFriendly, Release $currentRelease)."
+                "no modern runtimes installed"
+            }
+
+            if ($isCurrent481) {
+                $result.Message = "SIMULATE: .NET Framework is current ($currentFriendly, Release $currentRelease; $statusFx3; $modernMsg)."
+            } else {
+                $result.Message = "SIMULATE: would install .NET Framework 4.8.1 via offline installer (current: $currentFriendly, Release $currentRelease; $modernMsg)."
             }
             return $result
         }
@@ -152,7 +219,6 @@ function Invoke-AppUpdate {
                 3010    { $result.Success = $true;  $result.RebootRequired = $true; $result.Message = 'Installed .NET Framework 4.8.1; reboot required.' }
                 1641    { $result.Success = $true;  $result.RebootRequired = $true; $result.Message = 'Installed .NET Framework 4.8.1; reboot initiated by installer.' }
                 5100    {
-                    # 5100 indicates already installed or not applicable to this OS edition
                     $result.Success = $true
                     $result.Message = 'Installer reported .NET 4.8.1 not applicable or already current (5100).'
                 }
@@ -162,6 +228,26 @@ function Invoke-AppUpdate {
             $fx3Msg = if ($hasNetFx3 -or (Test-NetFx3Enabled)) { 'NetFx3 enabled' } else { 'NetFx3 pending' }
             $result.Success = $true
             $result.Message = "Already up to date (.NET $currentFriendly, Release $currentRelease; $fx3Msg). Monthly cumulative patches serviced by Windows Update."
+        }
+
+        # --- STEP 3: Update any installed modern .NET Desktop Runtimes (.NET 6, 8, 9) ---
+        if ($modernRuntimes.Count -gt 0) {
+            $uniqueMajors = @($modernRuntimes | Select-Object -ExpandProperty Major -Unique)
+            $modernResults = @()
+            foreach ($major in $uniqueMajors) {
+                $wingetId = "Microsoft.DotNet.DesktopRuntime.$major"
+                Write-Log "[$($script:AppName)] Detected modern .NET $major runtime. Checking updates via WinGet ($wingetId)..." -Level INFO
+                try {
+                    $r = Invoke-WinGetUpgrade -Id $wingetId -Simulate:$Simulate
+                    if ($r.RebootRequired) { $result.RebootRequired = $true }
+                    $modernResults += (".NET {0}: {1}" -f $major, $r.Message)
+                } catch {
+                    Write-Log "[$($script:AppName)] WinGet check for $wingetId warning: $($_.Exception.Message)" -Level WARN
+                }
+            }
+            if ($modernResults.Count -gt 0) {
+                $result.Message += "; Modern: " + ($modernResults -join ' | ')
+            }
         }
 
         return $result
