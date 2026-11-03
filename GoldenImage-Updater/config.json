@@ -1,0 +1,17 @@
+{
+  "LogDirectory": "C:\\ProgramData\\GoldenImageUpdater\\Logs",
+  "FallbackLogDirectory": "Logs",
+  "LogRetentionDays": 30,
+  "WinGetTimeoutSeconds": 300,
+  "EnableGlobalMsiLogging": true,
+  "OrganizeDesktopShortcuts": true,
+  "DesktopShortcutsSubFolder": "Applications",
+  "BrowserShortcutPatterns": [
+    "Google Chrome*",
+    "Microsoft Edge*",
+    "Firefox*",
+    "Mozilla Firefox*"
+  ],
+  "DisabledModules": []
+}
+
