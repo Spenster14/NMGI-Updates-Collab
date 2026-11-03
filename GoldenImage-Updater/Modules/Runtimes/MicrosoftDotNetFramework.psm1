@@ -36,13 +36,13 @@ function Get-DotNet4Info {
         if ($props -and $props.Release) {
             $release = [int]$props.Release
             $friendly = switch ($release) {
-                { $_ -ge 533320 } { '4.8.1' }
-                { $_ -ge 528040 } { '4.8' }
-                { $_ -ge 461808 } { '4.7.2' }
-                { $_ -ge 461308 } { '4.7.1' }
-                { $_ -ge 460798 } { '4.7' }
-                { $_ -ge 394802 } { '4.6.2' }
-                default           { '4.x' }
+                { $_ -ge 533320 } { '4.8.1'; break }
+                { $_ -ge 528040 } { '4.8'; break }
+                { $_ -ge 461808 } { '4.7.2'; break }
+                { $_ -ge 461308 } { '4.7.1'; break }
+                { $_ -ge 460798 } { '4.7'; break }
+                { $_ -ge 394802 } { '4.6.2'; break }
+                default           { '4.x'; break }
             }
             return [pscustomobject]@{
                 Release  = $release
@@ -235,15 +235,33 @@ function Invoke-AppUpdate {
             $uniqueMajors = @($modernRuntimes | Select-Object -ExpandProperty Major -Unique)
             $modernResults = @()
             foreach ($major in $uniqueMajors) {
-                $wingetId = "Microsoft.DotNet.DesktopRuntime.$major"
-                Write-Log "[$($script:AppName)] Detected modern .NET $major runtime. Checking updates via WinGet ($wingetId)..." -Level INFO
-                try {
-                    $r = Invoke-WinGetUpgrade -Id $wingetId -Simulate:$Simulate
-                    if ($r.RebootRequired) { $result.RebootRequired = $true }
-                    $modernResults += (".NET {0}: {1}" -f $major, $r.Message)
-                } catch {
-                    Write-Log "[$($script:AppName)] WinGet check for $wingetId warning: $($_.Exception.Message)" -Level WARN
+                $rtForMajor = $modernRuntimes | Where-Object { $_.Major -eq $major } | Select-Object -First 1
+                $verStr = if ($rtForMajor -and $rtForMajor.Version) { $rtForMajor.Version } else { "$major.x" }
+
+                $wingetCandidates = @("Microsoft.DotNet.DesktopRuntime.$major", "Microsoft.DotNet.Runtime.$major")
+                $statusMsg = ''
+
+                foreach ($wingetId in $wingetCandidates) {
+                    Write-Log "[$($script:AppName)] Checking modern .NET $major updates via WinGet ($wingetId)..." -Level INFO
+                    try {
+                        $r = Invoke-WinGetUpgrade -Id $wingetId -Simulate:$Simulate
+                        if ($r.RebootRequired) { $result.RebootRequired = $true }
+                        if ($r.Success) {
+                            $statusMsg = $r.Message
+                            break
+                        } elseif ($r.Message -notmatch '(?i)No installed package found') {
+                            $statusMsg = $r.Message
+                            break
+                        }
+                    } catch {
+                        Write-Log "[$($script:AppName)] WinGet check for ${wingetId}: $($_.Exception.Message)" -Level DEBUG
+                    }
                 }
+
+                if (-not $statusMsg -or $statusMsg -match '(?i)No installed package found') {
+                    $statusMsg = "current ($verStr, managed via Windows Update)"
+                }
+                $modernResults += (".NET {0}: {1}" -f $major, $statusMsg)
             }
             if ($modernResults.Count -gt 0) {
                 $result.Message += "; Modern: " + ($modernResults -join ' | ')
