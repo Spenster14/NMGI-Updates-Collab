@@ -26,6 +26,7 @@ $files = [ordered]@{
     'AdobeAcrobat'            = Join-Path $root 'Modules\Productivity\AdobeAcrobat.psm1'
     'MicrosoftDotNetFramework' = Join-Path $root 'Modules\Runtimes\MicrosoftDotNetFramework.psm1'
     'MicrosoftOffice365'      = Join-Path $root 'Modules\Productivity\MicrosoftOffice365.psm1'
+    'ThomsonUltraTaxCS'       = Join-Path $root 'Modules\TaxAccounting\ThomsonReuters\ThomsonUltraTaxCS.psm1'
 }
 $required = 'Test-AppInstalled', 'Get-AppVersion', 'Invoke-AppUpdate', 'Test-UpdateSuccess'
 $mods = @{}
@@ -196,6 +197,11 @@ Test-Case 'MicrosoftOffice365 -Simulate performs no install' {
     Set-MockInstaller -Throw   # would throw if installer called
     $r = Invoke-Fn $mods['MicrosoftOffice365'] 'Invoke-AppUpdate' @{ Simulate = $true }; Assert-Schema $r
     Assert ($r.Success -and ($r.Message -like 'SIMULATE*' -or $r.Message -like 'Already up to date*')) $r.Message
+}
+Test-Case 'ThomsonUltraTaxCS -Simulate performs no install' {
+    Set-MockInstaller -Throw   # would throw if installer called
+    $r = Invoke-Fn $mods['ThomsonUltraTaxCS'] 'Invoke-AppUpdate' @{ Simulate = $true }; Assert-Schema $r
+    Assert ($r.Success -and ($r.Message -like 'SIMULATE*' -or $r.Message -like 'No supported UltraTax*')) $r.Message
 }
 Test-Case 'Template Invoke-AppUpdate returns schema even on error' {
     [void](Set-MockWinGet -Mode fail)
