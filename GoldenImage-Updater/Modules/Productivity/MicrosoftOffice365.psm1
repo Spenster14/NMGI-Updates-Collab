@@ -290,7 +290,9 @@ function Invoke-AppUpdate {
 
 function Test-UpdateSuccess {
     [CmdletBinding()] [OutputType([bool])] param()
-    return (Test-AppInstalled -and (-not [string]::IsNullOrWhiteSpace((Get-AppVersion))))
+    $isInstalled = Test-AppInstalled
+    $ver = Get-AppVersion
+    return ($isInstalled -and (-not [string]::IsNullOrWhiteSpace($ver)))
 }
 
 Export-ModuleMember -Function Test-AppInstalled, Get-AppVersion, Invoke-AppUpdate, Test-UpdateSuccess, Get-AppMetadata
