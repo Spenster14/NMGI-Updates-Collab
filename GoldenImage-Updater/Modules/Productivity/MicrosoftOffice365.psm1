@@ -248,6 +248,17 @@ function Invoke-AppUpdate {
             } else {
                 $teamsMsg = "Teams provisioning completed (exit code $bootExit)"
             }
+
+            # Enforce Microsoft AVD / VDI optimization & disableAutoUpdate policy
+            try {
+                $teamsReg = 'HKLM:\SOFTWARE\Microsoft\Teams'
+                if (-not (Test-Path -LiteralPath $teamsReg)) {
+                    New-Item -Path $teamsReg -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                Set-ItemProperty -Path $teamsReg -Name 'IsWVDEnvironment' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                Set-ItemProperty -Path $teamsReg -Name 'disableAutoUpdate' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                Write-Log "[Microsoft Office 365] Configured Teams AVD policies (IsWVDEnvironment=1, disableAutoUpdate=1)." -Level DEBUG
+            } catch { }
         } catch {
             $teamsMsg = "Teams provisioning warning: $($_.Exception.Message)"
             Write-Log "[Microsoft Office 365] $teamsMsg" -Level WARN
