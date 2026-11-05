@@ -148,6 +148,22 @@ function Get-AppVersion {
     return ($parts -join '; ')
 }
 
+function Get-UltraTaxUpdaterExecutable {
+    param([Parameter(Mandatory)][string]$AppExe)
+    $dir = Split-Path $AppExe -Parent
+    $csiUpd = Join-Path $dir 'csiupd.exe'
+    if (Test-Path -LiteralPath $csiUpd) {
+        return $csiUpd
+    }
+    # Check local C:\WINCSI fallback
+    if ($AppExe -match '(?i)utw(\d{2})\.exe') {
+        $twoDigit = $Matches[1]
+        $localCsi = "C:\WINCSI\UT$twoDigit\csiupd.exe"
+        if (Test-Path -LiteralPath $localCsi) { return $localCsi }
+    }
+    return $AppExe # Fallback to original utwXX.exe if csiupd.exe is not found
+}
+
 function Invoke-AppUpdate {
     [CmdletBinding()] param([switch]$Simulate)
     $result = [PSCustomObject]@{
@@ -227,16 +243,20 @@ function Invoke-AppUpdate {
 
     foreach ($yr in ($targets.Keys | Sort-Object)) {
         $target = $targets[$yr]
-        $exePath = $target.Executable
-        Write-Log "[Thomson UltraTax CS] Starting CS Connect update cycle for UltraTax $($target.Year) ('$exePath')..." -Level INFO
+        $updaterExe = Get-UltraTaxUpdaterExecutable -AppExe $target.Executable
+        Write-Log "[Thomson UltraTax CS] Starting update cycle for UltraTax $($target.Year) ('$updaterExe')..." -Level INFO
 
         # Run Update-UltraTax.ahk with timeout and error suppression
-        $ahkArgs = "/ErrorStdOut `"$ahkScript`" $yr `"$exePath`""
+        $ahkArgs = "/ErrorStdOut `"$ahkScript`" $yr `"$updaterExe`""
         $code = Start-InstallerProcess -FilePath $ahkExe -Arguments $ahkArgs -TimeoutMinutes 20 -LogName "UltraTax-$yr"
 
         if ($code -eq 0) {
             Write-Log "[Thomson UltraTax CS] UltraTax $($target.Year) update cycle finished successfully (code 0)." -Level INFO
             $yearSummaries += "$($target.Year): Success"
+        } elseif ($code -eq 2) {
+            Write-Log "[Thomson UltraTax CS] UltraTax $($target.Year) update deferred: Active users currently logged into the software." -Level WARN
+            $yearSummaries += "$($target.Year): Deferred (Active Users Logged In)"
+            $allSuccess = $false
         } else {
             Write-Log "[Thomson UltraTax CS] UltraTax $($target.Year) updater exited with code $code." -Level WARN
             $yearSummaries += "$($target.Year): Failed (code $code)"

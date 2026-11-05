@@ -1,9 +1,10 @@
 #Requires AutoHotkey v2.0
-; Update-UltraTax.ahk - Standalone UltraTax CS updater worker
+; Update-UltraTax.ahk - Standalone UltraTax CS updater worker via csiupd.exe update
 ; Usage: AutoHotkey64.exe Update-UltraTax.ahk <Year> <ExecutablePath>
 ; Exit codes:
 ;   0 = Success (No updates needed OR Updates successfully applied)
 ;   1 = Error / Timeout / Execution failure
+;   2 = Deferred / Blocked by active users in UltraTax
 
 #include Lib\UIA.ahk
 
@@ -36,193 +37,151 @@ if (!FileExist(targetExe)) {
     ExitApp(1)
 }
 
-; --- Helper: Dismiss Popups & Bulletins ---
-HandleBulletins(loops := 5) {
-    loop loops {
-        Sleep(1000)
+isCsiUpd := InStr(targetExe, "csiupd.exe")
 
-        if WinExist("Choose Data Location") {
-            LogMsg("Detected 'Choose Data Location' popup; clicking OK.")
-            try WinActivate("Choose Data Location")
-            try {
-                UIA.ElementFromHandle("Choose Data Location").FindElement({ Name: "OK", Type: "Button" }).Click()
-            } catch {
-                Send("{Enter}")
-            }
-        }
-
-        if WinExist("User already present") {
-            LogMsg("Detected 'User already present' popup; clicking OK.")
-            try WinActivate("User already present")
-            try {
-                UIA.ElementFromHandle("User already present").FindElement({ Name: "OK", Type: "Button" }).Click()
-            } catch {
-                Send("{Enter}")
-            }
-        }
-
-        if WinExist("User Bulletin") {
-            LogMsg("Detected 'User Bulletin' popup; dismissing.")
-            try WinActivate("User Bulletin")
-            try {
-                UIA.ElementFromHandle("User Bulletin").FindElement({ Name: "Close", Type: "Button" }).Click()
-            } catch {
-                WinClose("User Bulletin")
-            }
-        }
-    }
-}
-
-; --- Helper: TR / Onvio Login Flow ---
-TRLogin() {
-    if WinWait("Sign In | Firm ID", , 12) {
-        LogMsg("Detected 'Sign In | Firm ID' window; attempting Sign In button.")
-        try WinActivate("Sign In | Firm ID")
-        Sleep(1500)
-        try {
-            UIA.ElementFromHandle("Sign In | Firm ID").WaitElement({ AutomationId: "SignInButton" }, 10000).ControlClick()
-        } catch {
-            ; ignore
-        }
-
-        GroupAdd("TRLoginGroup", "Onvio")
-        GroupAdd("TRLoginGroup", "Sign in to")
-
-        if WinWait("ahk_group TRLoginGroup", , 25) {
-            if WinExist("Onvio") {
-                LogMsg("Detected Onvio authenticated session.")
-                Sleep(3000)
-                try WinClose("Onvio")
-                return
-            }
-        }
-    }
-}
-
-; ==============================================================================
-; Main Update Execution Flow
-; ==============================================================================
 try {
-    LogMsg("Launching UltraTax CS: " . targetExe)
-    Run(targetExe)
-
-    ; Check for Thomson Reuters sign-in / Onvio window
-    TRLogin()
-
-    LogMsg("Waiting for UltraTax CS main window...")
-    if !WinWait("UltraTax CS", , 120) {
-        LogMsg("ERROR: Timed out waiting for UltraTax CS main window (120s).")
-        ExitApp(1)
+    if (isCsiUpd) {
+        LogMsg("Launching standalone CS Connect updater: " . targetExe . " update")
+        Run('"' . targetExe . '" update')
+    } else {
+        LogMsg("Launching UltraTax CS application wrapper: " . targetExe)
+        Run(targetExe)
     }
 
-    try WinActivate("UltraTax CS")
-    try WinMaximize("UltraTax CS")
-    Sleep(1000)
+    ; Main monitoring loop (up to 20 minutes)
+    maxLoops := 400
+    loop maxLoops {
+        Sleep(2500)
 
-    HandleBulletins(5)
+        ; ----------------------------------------------------------------------
+        ; 1. Check for Active Users Dialog ("The following users are using UltraTax CS")
+        ; ----------------------------------------------------------------------
+        if WinExist("UltraTax CS - Apply Updates") {
+            hwndApply := WinExist("UltraTax CS - Apply Updates")
+            winText := WinGetText(hwndApply)
 
-    ; Navigate to CS Connect
-    LogMsg("Searching for CS Connect button...")
-    btn := ""
-    loop 60 { ; Check up to 120 seconds (2s sleep)
-        HandleBulletins(1)
+            if (InStr(winText, "following users are using") || InStr(winText, "need to exit")) {
+                LogMsg("BLOCKED: Active users currently logged into UltraTax " . targetYear . ". Dismissing update dialog.")
+                try {
+                    UIA.ElementFromHandle(hwndApply).FindElement({ Name: "Cancel", Type: "Button" }).Click()
+                } catch {
+                    try ControlClick("Cancel", hwndApply)
+                    catch {
+                        WinClose(hwndApply)
+                    }
+                }
+                Sleep(1000)
+                ExitApp(2) ; Code 2 = Deferred due to active users
+            }
 
-        try {
-            if WinExist("UltraTax CS") {
-                utEl := UIA.ElementFromHandle("UltraTax CS")
-                btn := utEl.FindElement({ Name: "CS Connect (Ctrl+K)", Type: "Button" })
-                if btn {
-                    LogMsg("Found 'CS Connect (Ctrl+K)' button; clicking.")
-                    btn.Click()
-                    break
+            ; If it's an Apply Updates prompt without user locks (ready to apply)
+            if (InStr(winText, "Apply") || InStr(winText, "ready to be applied") || InStr(winText, "Updates have been")) {
+                LogMsg("Detected 'Apply Updates' prompt ready to install; clicking Apply/OK.")
+                try {
+                    UIA.ElementFromHandle(hwndApply).FindElement({ Name: "Apply", Type: "Button" }).Click()
+                } catch {
+                    try {
+                        UIA.ElementFromHandle(hwndApply).FindElement({ Name: "OK", Type: "Button" }).Click()
+                    } catch {
+                        Send("{Enter}")
+                    }
                 }
             }
-        } catch {
-            ; continue polling
         }
 
-        Sleep(2000)
-    }
-
-    ; Fallback to Ctrl+K shortcut if button search timed out
-    if (!btn) {
-        LogMsg("Button not found via UIA; sending fallback shortcut Ctrl+K.")
-        try WinActivate("UltraTax CS")
-        Sleep(500)
-        Send("^k")
-    }
-
-    ; Wait for CS Connect dialog
-    LogMsg("Waiting for CS Connect window...")
-    if !WinWait("CS Connect", , 120) {
-        LogMsg("ERROR: Timed out waiting for CS Connect window (120s).")
-        ExitApp(1)
-    }
-
-    LogMsg("CS Connect opened; clicking Connect.")
-    try {
-        UIA.ElementFromHandle("CS Connect").WaitElement({ Name: "Connect", Type: "Button" }, 15000).Click()
-    } catch {
-        try WinActivate("CS Connect")
-        Sleep(500)
-        Send("{Enter}")
-    }
-
-    ; Wait for Call Summary (up to 5 minutes)
-    LogMsg("Waiting for Call Summary window (up to 300s)...")
-    if !WinWait("Call Summary", , 300) {
-        LogMsg("ERROR: Timed out waiting for Call Summary window.")
-        ExitApp(1)
-    }
-
-    Sleep(2000)
-    docText := ""
-    try {
-        callSumEl := UIA.ElementFromHandle("Call Summary")
-        docText := callSumEl.WaitElement({ LocalizedType: "document", Type: "Document" }, 15000).Value
-    } catch as err {
-        LogMsg("WARNING: Could not read Document element from Call Summary: " . err.Message)
-    }
-
-    LogMsg("Call Summary content preview: " . SubStr(docText, 1, 150))
-
-    ; Case A: No updates found
-    if (InStr(docText, "No new updates") || InStr(docText, "no updates")) {
-        LogMsg("STATUS: NO_UPDATES - UltraTax " . targetYear . " is already up to date.")
-        try callSumEl.FindElement({ Name: "Close", Type: "Button" }).Click()
-        Sleep(1000)
-        try WinClose("UltraTax CS")
-        ExitApp(0)
-    }
-
-    ; Case B: Updates applied (restart required)
-    LogMsg("STATUS: UPDATES_FOUND - Applying updates...")
-    try callSumEl.FindElement({ Name: "Close", Type: "Button" }).Click()
-
-    LogMsg("Waiting for 'Updates have been applied' restart prompt...")
-    if WinWait("UltraTax CS", "Updates have been applied", 60) {
-        LogMsg("Restart prompt appeared; clicking OK.")
-        try {
-            UIA.ElementFromHandle("UltraTax CS").WaitElement({ Name: "OK", Type: "Button" }, 10000).Click()
-        } catch {
-            Send("{Enter}")
+        ; ----------------------------------------------------------------------
+        ; 2. Check for CS Connect window
+        ; ----------------------------------------------------------------------
+        if WinExist("CS Connect") {
+            hwndConn := WinExist("CS Connect")
+            try {
+                connEl := UIA.ElementFromHandle(hwndConn)
+                btnConnect := connEl.FindElement({ Name: "Connect", Type: "Button" })
+                if (btnConnect) {
+                    LogMsg("Found CS Connect dialog; clicking Connect.")
+                    btnConnect.Click()
+                }
+            } catch {
+                ; If UIA fails, activate and press Enter
+                try {
+                    WinActivate(hwndConn)
+                    Sleep(500)
+                    Send("{Enter}")
+                }
+            }
         }
 
-        ; Wait for restart cycle
-        LogMsg("Waiting for UltraTax CS restart cycle...")
-        WinWaitClose("UltraTax CS", , 60)
-        if WinWait("UltraTax CS", , 120) {
-            try WinActivate("UltraTax CS")
-            HandleBulletins(10)
-            try WinClose("UltraTax CS")
+        ; ----------------------------------------------------------------------
+        ; 3. Check for Call Summary window
+        ; ----------------------------------------------------------------------
+        if WinExist("Call Summary") {
+            hwndSum := WinExist("Call Summary")
+            Sleep(2000)
+            docText := ""
+            try {
+                sumEl := UIA.ElementFromHandle(hwndSum)
+                docText := sumEl.WaitElement({ LocalizedType: "document", Type: "Document" }, 8000).Value
+            } catch as err {
+                LogMsg("Call Summary document read notice: " . err.Message)
+            }
+
+            LogMsg("Call Summary content preview: " . SubStr(docText, 1, 150))
+
+            if (InStr(docText, "No new updates") || InStr(docText, "no updates")) {
+                LogMsg("STATUS: NO_UPDATES - UltraTax " . targetYear . " is already up to date.")
+                try {
+                    UIA.ElementFromHandle(hwndSum).FindElement({ Name: "Close", Type: "Button" }).Click()
+                } catch {
+                    try WinClose(hwndSum)
+                }
+                Sleep(1500)
+                ExitApp(0)
+            } else {
+                LogMsg("STATUS: UPDATES_FOUND - UltraTax " . targetYear . " updates downloaded.")
+                try {
+                    UIA.ElementFromHandle(hwndSum).FindElement({ Name: "Close", Type: "Button" }).Click()
+                } catch {
+                    try WinClose(hwndSum)
+                }
+                Sleep(2000)
+            }
         }
-    } else {
-        LogMsg("No restart prompt; closing UltraTax CS.")
-        try WinClose("UltraTax CS")
+
+        ; ----------------------------------------------------------------------
+        ; 4. Check for Restart / Completion Dialogs
+        ; ----------------------------------------------------------------------
+        if WinExist("UltraTax CS") {
+            hwndUT := WinExist("UltraTax CS")
+            winTextUT := WinGetText(hwndUT)
+
+            if (InStr(winTextUT, "Updates have been applied") || InStr(winTextUT, "successfully applied") || InStr(winTextUT, "restart")) {
+                LogMsg("Detected completion/restart prompt; clicking OK.")
+                try {
+                    UIA.ElementFromHandle(hwndUT).FindElement({ Name: "OK", Type: "Button" }).Click()
+                } catch {
+                    Send("{Enter}")
+                }
+                Sleep(3000)
+                LogMsg("STATUS: UPDATES_INSTALLED - UltraTax " . targetYear . " update finished.")
+                ExitApp(0)
+            }
+        }
+
+        ; ----------------------------------------------------------------------
+        ; 5. Process Exit Check
+        ; ----------------------------------------------------------------------
+        SplitPath(targetExe, &exeName)
+        if (!ProcessExist(exeName)) {
+            ; If process exited and no update windows remain
+            if (!WinExist("UltraTax CS") && !WinExist("CS Connect") && !WinExist("Call Summary") && !WinExist("UltraTax CS - Apply Updates")) {
+                LogMsg("Updater process " . exeName . " exited cleanly.")
+                ExitApp(0)
+            }
+        }
     }
 
-    LogMsg("STATUS: UPDATES_INSTALLED - UltraTax " . targetYear . " successfully updated.")
-    ExitApp(0)
+    LogMsg("TIMEOUT: Monitoring loop timed out after 20 minutes.")
+    ExitApp(1)
 
 } catch as err {
     LogMsg("FATAL ERROR: " . err.Message . " (Line " . err.Line . ")")
